@@ -1,0 +1,229 @@
+apiVersion: v1
+kind: Template
+metadata:
+  name: xigua-browser-update-service
+  annotations:
+    description: "XiGua APP xigua-browser-update-service"
+    iconClass: "icon-nodejs"
+    tags: "xigua,app,browser-update-service"
+    openshift.io/provider-display-name: "XiGua, Inc."
+    openshift.io/documentation-url: "https://gitlab.xiguacity.cn/fee/browser-update-service"
+    openshift.io/support-url: "https://confluence.xiguacity.cn/pages/viewpage.action?pageId=39649343"
+labels:
+  creator: xigua-browser-update-service
+objects:
+- apiVersion: image.openshift.io/v1
+  kind: ImageStream
+  metadata:
+    name: browser-update-service
+- apiVersion: build.openshift.io/v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+    name: browser-update-service
+  spec:
+    completionDeadlineSeconds: 1800
+    source:
+      type: Git
+      git:
+        ref: ${GIT_REF}
+        uri: ${GIT_URI}
+      secrets:
+      - destinationDir: .ssh
+        secret:
+          name: gitlab-build
+      sourceSecret:
+        name: gitlab-clone
+    output:
+      to:
+        kind: ImageStreamTag
+        name: 'browser-update-service:latest'
+    strategy:
+      type: Source
+      sourceStrategy:
+        env:
+        - name: APP_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: TZ
+          value: 'Asia/Shanghai'
+        - name: NODE_ENV
+          value: ${NODE_ENV}
+        from:
+          kind: ImageStreamTag
+          name: 'nodejs:10.13'
+          namespace: xigua
+        incremental: true
+    triggers:
+    - type: ImageChange
+    - type: ConfigChange
+    - type: GitLab
+      gitlab:
+        secret: ${GITLAB_WEBHOOK_SECRET}
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+    name: browser-update-service
+  spec:
+    replicas: 1
+    selector:
+      deploymentconfig: browser-update-service
+    template:
+      metadata:
+        labels:
+          deploymentconfig: browser-update-service
+      spec:
+        containers:
+          - name: browser-update-service
+            image: ' '
+            env:
+            - name: APP_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: TZ
+              value: 'Asia/Shanghai'
+            - name: NODE_ENV
+              value: ${NODE_ENV}
+            - name: REDIS_HOST
+              value: browser-update-service-redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_DB
+              value: "6"
+            - name: REDIS_PWD
+              value: "123456"
+            imagePullPolicy: Always
+            resources:
+              limits:
+                cpu: 500m
+                memory: 512Mi
+              requests:
+                cpu: 50m
+                memory: 128Mi
+    triggers:
+      - type: ConfigChange
+      - type: ImageChange
+        imageChangeParams:
+          automatic: true
+          containerNames:
+          - browser-update-service
+          from:
+            kind: ImageStreamTag
+            name: 'browser-update-service:latest'
+          lastTriggeredImage: ''
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+    name: browser-update-service-redis
+  spec:
+    replicas: 1
+    selector:
+      name: browser-update-service-redis
+    template:
+      metadata:
+        labels:
+          name: browser-update-service-redis
+      spec:
+        containers:
+        - name: browser-update-service-redis
+          env:
+          - name: REDIS_PASSWORD
+            value: "123456"
+          image: 'docker-registry.default.svc:5000/openshift/redis:3.2'
+          livenessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            successThreshold: 1
+            tcpSocket:
+              port: 6379
+            timeoutSeconds: 1
+          ports:
+          - containerPort: 6379
+            protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - -i
+              - -c
+              - test "$(redis-cli -h 127.0.0.1 -a $REDIS_PASSWORD ping)" == "PONG"
+            failureThreshold: 3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: browser-update-service
+  spec:
+    selector:
+      deploymentconfig: browser-update-service
+    ports:
+      - name: http
+        protocol: TCP
+        port: 8080
+        targetPort: 8080
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: browser-update-service-redis
+  spec:
+    selector:
+      deploymentconfig: browser-update-service-redis
+    ports:
+      - name: redis
+        protocol: TCP
+        port: 6379
+        targetPort: 6379
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: browser-update-service
+  spec:
+    port:
+      targetPort: http
+    to:
+      kind: Service
+      name: browser-update-service
+parameters:
+- description: This app domain name (use project name if your app does not support CORS)
+  displayName: Domain
+  name: PROJECT_DOMAIN
+  required: true
+- description: Source code git repository uri (git@gitlab.xiguacity.cn:devops/talks.git)
+  displayName: Git repository
+  name: GIT_URI
+  value: 'git@gitlab.xiguacity.cn:fee/xigua-browser-update-service.git'
+  required: true
+- description: Source code git branch to build against (default master)
+  displayName: Git branch
+  name: GIT_REF
+  value: master
+  required: true
+- description: Node app build or running environment
+  displayName: NODE_ENV
+  name: NODE_ENV
+  value: docker
+  required: true
+- description: A secret string used to configure the GitLab webhook.
+  displayName: GitLab Webhook Secret
+  from: '[a-zA-Z0-9]{16}'
+  generate: expression
+  name: GITLAB_WEBHOOK_SECRET
+  required: true
